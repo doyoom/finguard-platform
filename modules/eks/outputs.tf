@@ -1,12 +1,16 @@
-output "cluster_name" {
-  value = aws_eks_cluster.main.name
+output "eks_cluster_id" {
+  value = aws_eks_cluster.main.id
 }
 
-output "cluster_endpoint" {
+output "eks_cluster_endpoint" {
   value = aws_eks_cluster.main.endpoint
 }
 
-output "cluster_arn" {
+output "eks_cluster_name" {
+  value = aws_eks_cluster.main.name
+}
+
+output "eks_cluster_arn" {
   value = aws_eks_cluster.main.arn
 }
 
