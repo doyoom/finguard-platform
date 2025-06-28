@@ -2,6 +2,7 @@ resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
+
   tags = {
     Name = "cloudflix-vpc"
     Type = "Main"
@@ -18,89 +19,89 @@ resource "aws_internet_gateway" "igw" {
 
 #public subnets
 resource "aws_subnet" "public" {
-  count                   = length(var.public_subnet_cidrs)
+  for_each = { for i, cidr in var.public_subnet_cidrs : "public-${i}" => cidr }
+
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = element(var.azs, count.index)
+  cidr_block              = each.value
+  availability_zone       = var.azs[tonumber(regex("[0-9]+", each.key))]
   map_public_ip_on_launch = true
-  
+
   tags = {
-    Name = "cloudflix-public-${count.index + 1}"
+    Name = "cloudflix-${each.key}"
   }
 }
 
-# pulbic rout table
+resource "aws_subnet" "private" {
+  for_each = { for i, cidr in var.private_subnet_cidrs : "private-${i}" => cidr }
+
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = each.value
+  availability_zone = var.azs[tonumber(regex("[0-9]+", each.key))]
+
+  tags = {
+    Name = "cloudflix-${each.key}"
+  }
+}
+
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-  
+
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
-  
+
   tags = {
-    Name = "cloudflix-public-rt""
+    Name = "cloudflix-public-rt"
   }
 }
 
-# public route table association
 resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
-  subnet_id      = aws_subnet.public[count.index].id
+  for_each = aws_subnet.public
+
+  subnet_id      = each.value.id
   route_table_id = aws_route_table.public.id
 }
 
-#private subnets
-resource "aws_subnet" "private" {
-  count             = length(var.private_subnet_cidrs)
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
-  availability_zone = element(var.azs, count.index)
-  
-  tags = {
-    Name = "$cloudflix-private-${count.index + 1}"
-  }
-}
-
-# NAT Gateway용 Elastic IP
 resource "aws_eip" "nat" {
-  count  = length(var.private_subnet_cidrs)
+  for_each = aws_subnet.private
+
   domain = "vpc"
 
   tags = {
-    Name = "cloudflix-nat-eip-${count.index + 1}"
+    Name = "cloudflix-nat-eip-${each.key}"
   }
 }
 
-# NAT Gateway
 resource "aws_nat_gateway" "nat" {
-  count         = length(var.private_subnet_cidrs)
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
+  for_each = aws_subnet.private
+
+  allocation_id = aws_eip.nat[each.key].id
+  subnet_id     = values(aws_subnet.public)[0].id  # 모든 NAT을 첫 번째 public subnet에 둠
 
   tags = {
-    Name = "cloudflix-nat-${count.index + 1}"
+    Name = "cloudflix-nat-${each.key}"
   }
 }
 
-# Private Route Table
 resource "aws_route_table" "private" {
-  count  = length(var.private_subnet_cidrs)
+  for_each = aws_subnet.private
+
   vpc_id = aws_vpc.main.id
-  
+
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat[count.index].id
+    nat_gateway_id = aws_nat_gateway.nat[each.key].id
   }
-  
+
   tags = {
-    Name = "cloudflix-private-rt-${count.index + 1}"
+    Name = "cloudflix-private-rt-${each.key}"
   }
 }
 
-# private route table association
 resource "aws_route_table_association" "private" {
-  count          = length(aws_subnet.private)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private[count.index].id
+  for_each = aws_subnet.private
+
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.private[each.key].id
 }
