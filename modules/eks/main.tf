@@ -1,15 +1,3 @@
-# eks/variables.tf
-variable "cluster_name" {
-  type = string
-}
-
-variable "private_subnet_ids" {
-  type = list(string)
-}
-
-
-# eks/main.tf
-# IAM Role for EKS Cluster
 resource "aws_iam_role" "eks_cluster" {
   name = "${var.cluster_name}-cluster-role"
 
@@ -32,7 +20,6 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   role       = aws_iam_role.eks_cluster.name
 }
 
-# EKS Cluster
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
   role_arn = aws_iam_role.eks_cluster.arn
@@ -49,7 +36,6 @@ resource "aws_eks_cluster" "main" {
   }
 }
 
-# IAM Role for Fargate Profile
 resource "aws_iam_role" "fargate_profile" {
   name = "${var.cluster_name}-fargate-role"
 
@@ -79,15 +65,12 @@ resource "aws_eks_fargate_profile" "main" {
   subnet_ids             = var.private_subnet_ids
 
   selector {
-    namespace = "default"
+    namespace = "karpenter"
   }
 
   depends_on = [aws_iam_role_policy_attachment.fargate_profile_policy]
 }
 
-# Karpenter 관련 설정
-
-# 현재 AWS 계정 정보 조회
 data "aws_caller_identity" "current" {}
 
 resource "aws_iam_role" "karpenter_controller" {
@@ -207,10 +190,9 @@ resource "aws_iam_instance_profile" "karpenter_node" {
 }
 
 resource "aws_eks_access_entry" "karpenter" {
-  cluster_name      = aws_eks_cluster.main.name
-  principal_arn     = aws_iam_role.karpenter_controller.arn
-  kubernetes_groups = ["system:masters"]
-  type              = "STANDARD"
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.karpenter_controller.arn
+  type          = "STANDARD"
 
   depends_on = [aws_eks_cluster.main]
 }

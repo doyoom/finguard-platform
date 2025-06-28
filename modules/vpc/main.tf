@@ -1,3 +1,7 @@
+provider "aws" {
+  region = "ap-northeast-2"
+}
+
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -17,7 +21,6 @@ resource "aws_internet_gateway" "igw" {
   }
 }
 
-#public subnets
 resource "aws_subnet" "public" {
   for_each = { for i, cidr in var.public_subnet_cidrs : "public-${i}" => cidr }
 
@@ -64,23 +67,19 @@ resource "aws_route_table_association" "public" {
 }
 
 resource "aws_eip" "nat" {
-  for_each = aws_subnet.private
-
   domain = "vpc"
 
   tags = {
-    Name = "cloudflix-nat-eip-${each.key}"
+    Name = "cloudflix-nat-eip"
   }
 }
 
 resource "aws_nat_gateway" "nat" {
-  for_each = aws_subnet.private
-
-  allocation_id = aws_eip.nat[each.key].id
-  subnet_id     = values(aws_subnet.public)[0].id  # 모든 NAT을 첫 번째 public subnet에 둠
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public["public-0"].id
 
   tags = {
-    Name = "cloudflix-nat-${each.key}"
+    Name = "cloudflix-nat"
   }
 }
 
@@ -91,7 +90,7 @@ resource "aws_route_table" "private" {
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat[each.key].id
+    nat_gateway_id = aws_nat_gateway.nat.id
   }
 
   tags = {
@@ -104,4 +103,18 @@ resource "aws_route_table_association" "private" {
 
   subnet_id      = each.value.id
   route_table_id = aws_route_table.private[each.key].id
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.ap-northeast-2.s3"
+  vpc_endpoint_type = "Gateway"
+
+  route_table_ids = [
+    for rt in aws_route_table.private : rt.id
+  ]
+
+  tags = {
+    Name = "cloudflix-s3-endpoint"
+  }
 }
