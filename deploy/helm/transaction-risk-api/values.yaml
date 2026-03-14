@@ -1,0 +1,60 @@
+# ── Default values ────────────────────────────────────
+replicaCount: 2
+
+image:
+  repository: <AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com/finguard/transaction-risk-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilization: 70
+
+env:
+  APP_VERSION: "1.0.0"
+  DB_HOST: ""
+  DB_PORT: "5432"
+  DB_NAME: "finguard"
+  LOG_LEVEL: "info"
+
+secret:
+  DB_USERNAME: ""
+  DB_PASSWORD: ""
+
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readiness:
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 5

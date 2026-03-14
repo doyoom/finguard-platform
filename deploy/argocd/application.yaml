@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: transaction-risk-api
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/doyoom/aws-study.git
+    targetRevision: main
+    path: final-project/finguard/deploy/helm/transaction-risk-api
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod-lite.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: finguard
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -1,198 +1,91 @@
-resource "aws_iam_role" "eks_cluster" {
-  name = "${var.cluster_name}-cluster-role"
+###############################################################################
+# EKS Module — Managed Node Group + OIDC + access_entries
+###############################################################################
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "eks.amazonaws.com"
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-  role       = aws_iam_role.eks_cluster.name
-}
-
+# ── EKS Cluster ──────────────────────────────────────
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
-  role_arn = aws_iam_role.eks_cluster.arn
-  version  = "1.29"
+  role_arn = var.cluster_role_arn
+  version  = var.cluster_version
 
   vpc_config {
-    subnet_ids = var.private_subnet_ids
+    subnet_ids              = var.private_subnet_ids
+    endpoint_private_access = true
+    endpoint_public_access  = true
   }
 
-  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
-
-  tags = {
-    Name = var.cluster_name
-  }
-}
-
-resource "aws_iam_role" "fargate_profile" {
-  name = "${var.cluster_name}-fargate-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "eks-fargate-pods.amazonaws.com"
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "fargate_profile_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy"
-  role       = aws_iam_role.fargate_profile.name
-}
-
-resource "aws_eks_fargate_profile" "main" {
-  cluster_name           = aws_eks_cluster.main.name
-  fargate_profile_name   = "default"
-  pod_execution_role_arn = aws_iam_role.fargate_profile.arn
-  subnet_ids             = var.private_subnet_ids
-
-  selector {
-    namespace = "karpenter"
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
   }
 
-  depends_on = [aws_iam_role_policy_attachment.fargate_profile_policy]
+  tags = { Name = var.cluster_name }
 }
 
-data "aws_caller_identity" "current" {}
-
-resource "aws_iam_role" "karpenter_controller" {
-  name = "${var.cluster_name}-karpenter-controller-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Federated = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}"
-        }
-        Condition = {
-          StringEquals = {
-            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:karpenter:karpenter",
-            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
-          }
-        }
-      }
-    ]
-  })
+# ── OIDC Provider (IRSA) ────────────────────────────
+data "tls_certificate" "eks" {
+  url = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
 
-resource "aws_iam_role_policy" "karpenter_controller" {
-  name = "${var.cluster_name}-karpenter-controller-policy"
-  role = aws_iam_role.karpenter_controller.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameter",
-          "ec2:DescribeImages",
-          "ec2:RunInstances",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeLaunchTemplates",
-          "ec2:DescribeInstances",
-          "ec2:DescribeInstanceTypes",
-          "ec2:DescribeInstanceTypeOfferings",
-          "ec2:DescribeAvailabilityZones",
-          "ec2:DeleteLaunchTemplate",
-          "ec2:CreateTags",
-          "ec2:CreateLaunchTemplate",
-          "ec2:CreateFleet",
-          "ec2:DescribeSpotPriceHistory",
-          "pricing:GetProducts"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:TerminateInstances",
-          "ec2:DeleteLaunchTemplate"
-        ]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "ec2:ResourceTag/karpenter.sh/cluster" = var.cluster_name
-          }
-        }
-      },
-      {
-        Effect = "Allow"
-        Action = "iam:PassRole"
-        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.cluster_name}-karpenter-node-*"
-      },
-      {
-        Effect = "Allow"
-        Action = "eks:DescribeCluster"
-        Resource = aws_eks_cluster.main.arn
-      }
-    ]
-  })
+resource "aws_iam_openid_connect_provider" "eks" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+  url             = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
 
-resource "aws_iam_role" "karpenter_node" {
-  name = "${var.cluster_name}-karpenter-node-role"
+# ── Managed Node Group ───────────────────────────────
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-node-group"
+  node_role_arn   = var.node_role_arn
+  subnet_ids      = var.private_subnet_ids
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      }
-    ]
-  })
+  instance_types = var.node_instance_types
+
+  scaling_config {
+    desired_size = var.node_desired_size
+    min_size     = var.node_min_size
+    max_size     = var.node_max_size
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  tags = { Name = "${var.cluster_name}-node-group" }
 }
 
-resource "aws_iam_role_policy_attachment" "karpenter_node_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-  role       = aws_iam_role.karpenter_node.name
-}
-
-resource "aws_iam_role_policy_attachment" "karpenter_node_cni_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-  role       = aws_iam_role.karpenter_node.name
-}
-
-resource "aws_iam_role_policy_attachment" "karpenter_node_registry_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-  role       = aws_iam_role.karpenter_node.name
-}
-
-resource "aws_iam_instance_profile" "karpenter_node" {
-  name = "${var.cluster_name}-karpenter-node-instance-profile"
-  role = aws_iam_role.karpenter_node.name
-}
-
-resource "aws_eks_access_entry" "karpenter" {
+# ── EKS Access Entry (노드 역할) ─────────────────────
+resource "aws_eks_access_entry" "node" {
   cluster_name  = aws_eks_cluster.main.name
-  principal_arn = aws_iam_role.karpenter_controller.arn
-  type          = "STANDARD"
+  principal_arn = var.node_role_arn
+  type          = "EC2_LINUX"
+}
 
-  depends_on = [aws_eks_cluster.main]
+# ── CloudWatch Log Group ─────────────────────────────
+resource "aws_cloudwatch_log_group" "eks" {
+  name              = "/aws/eks/${var.cluster_name}/cluster"
+  retention_in_days = 7
+
+  tags = { Name = "${var.cluster_name}-logs" }
+}
+
+# ── Node Security Group (for RDS access) ─────────────
+data "aws_eks_cluster" "this" {
+  name       = aws_eks_cluster.main.name
+  depends_on = [aws_eks_node_group.main]
+}
+
+data "aws_security_group" "node" {
+  filter {
+    name   = "tag:aws:eks:cluster-name"
+    values = [aws_eks_cluster.main.name]
+  }
+
+  filter {
+    name   = "tag:kubernetes.io/cluster/${aws_eks_cluster.main.name}"
+    values = ["owned"]
+  }
+
+  depends_on = [aws_eks_node_group.main]
 }

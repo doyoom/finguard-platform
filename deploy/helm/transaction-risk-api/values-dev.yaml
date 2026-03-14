@@ -1,0 +1,19 @@
+# ── Dev overrides ─────────────────────────────────────
+replicaCount: 1
+
+hpa:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+ingress:
+  enabled: false
+
+env:
+  LOG_LEVEL: "debug"

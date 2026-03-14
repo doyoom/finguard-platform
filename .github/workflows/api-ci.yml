@@ -1,0 +1,126 @@
+# =============================================================================
+# FinGuard CI Pipeline — GitHub Actions
+# =============================================================================
+# CI only: lint → test → Docker build → ECR push → Helm values tag update
+# CD는 ArgoCD가 담당
+# =============================================================================
+
+name: API CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "final-project/finguard/apps/transaction-risk-api/**"
+      - "final-project/finguard/deploy/helm/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "final-project/finguard/apps/transaction-risk-api/**"
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: finguard/transaction-risk-api
+  APP_DIR: final-project/finguard/apps/transaction-risk-api
+  HELM_VALUES: final-project/finguard/deploy/helm/transaction-risk-api/values.yaml
+
+jobs:
+  # ────────────────────────────────────────────────────
+  # CI Stage 1: Lint
+  # ────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd ${{ env.APP_DIR }}
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run flake8
+        run: |
+          cd ${{ env.APP_DIR }}
+          flake8 app/ --max-line-length=120 --exclude=__pycache__
+
+  # ────────────────────────────────────────────────────
+  # CI Stage 2: Unit Test + Coverage
+  # ────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd ${{ env.APP_DIR }}
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: |
+          cd ${{ env.APP_DIR }}
+          pytest tests/ -v --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  # ────────────────────────────────────────────────────
+  # CI Stage 3: Docker Build → ECR Push
+  # ────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd ${{ env.APP_DIR }}
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      # ── Helm values image tag 업데이트 ───────────────
+      - name: Update Helm values image tag
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          sed -i "s|tag: .*|tag: \"$IMAGE_TAG\"|" ${{ env.HELM_VALUES }}
+
+      - name: Commit updated Helm values
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.HELM_VALUES }}
+          git diff --staged --quiet || git commit -m "ci: update image tag to ${{ github.sha }}"
+          git push
